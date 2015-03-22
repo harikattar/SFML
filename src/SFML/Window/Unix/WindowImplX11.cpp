@@ -665,7 +665,7 @@ void WindowImplX11::requestFocus()
             break;
         }
     }
-    
+
     // Check if window is viewable (not on other desktop, ...)
     // TODO: Check also if minimized
     ScopedXcbPtr<xcb_get_window_attributes_reply_t> attributes(xcb_get_window_attributes_reply(
@@ -684,7 +684,7 @@ void WindowImplX11::requestFocus()
     }
 
     bool windowViewable = (attributes->map_state == XCB_MAP_STATE_VIEWABLE);
-    
+
     if (sfmlWindowFocused && windowViewable)
     {
         // Another SFML window of this application has the focus and the current window is viewable:
@@ -741,7 +741,7 @@ void WindowImplX11::switchToFullscreen(const VideoMode& mode)
             m_connection,
             RANDR.size(),
             RANDR.c_str()
-        ), 
+        ),
         NULL
     ));
 
@@ -860,7 +860,7 @@ void WindowImplX11::initialize()
             m_inputMethod,
             XNClientWindow,
             m_window,
-            XNFocusWindow, 
+            XNFocusWindow,
             m_window,
             XNInputStyle,
             XIMPreeditNothing | XIMStatusNothing,
@@ -1215,19 +1215,21 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
                 event.mouseWheel.y     = e->event_y;
                 pushEvent(event);
 
-                event.type                     = Event::MouseWheelVerticalMoved;
-                event.mouseWheelVertical.delta = button == XCB_BUTTON_INDEX_4 ? 1 : -1;
-                event.mouseWheelVertical.x     = e->event_x;
-                event.mouseWheelVertical.y     = e->event_y;
+                event.type                    = Event::MouseWheelPreciseMoved;
+                event.mouseWheelPrecise.wheel = Mouse::VerticalWheel;
+                event.mouseWheelPrecise.delta = button == XCB_BUTTON_INDEX_4 ? 1 : -1;
+                event.mouseWheelPrecise.x     = e->event_x;
+                event.mouseWheelPrecise.y     = e->event_y;
                 pushEvent(event);
             }
             else if ((button == 6) || (button == 7))
             {
                 Event event;
-                event.type                       = Event::MouseWheelHorizontalMoved;
-                event.mouseWheelHorizontal.delta = button == 6 ? 1 : -1;
-                event.mouseWheelHorizontal.x     = e->event_x;
-                event.mouseWheelHorizontal.y     = e->event_y;
+                event.type                    = Event::MouseWheelPreciseMoved;
+                event.mouseWheelPrecise.wheel = Mouse::HorizontalWheel;
+                event.mouseWheelPrecise.delta = button == 6 ? 1 : -1;
+                event.mouseWheelPrecise.x     = e->event_x;
+                event.mouseWheelPrecise.y     = e->event_y;
                 pushEvent(event);
             }
             break;
