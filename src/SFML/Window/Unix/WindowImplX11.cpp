@@ -31,6 +31,8 @@
 #include <SFML/Window/Unix/ScopedXcbPtr.hpp>
 #include <SFML/System/Utf.hpp>
 #include <SFML/System/Err.hpp>
+#include <SFML/System/Mutex.hpp>
+#include <SFML/System/Lock.hpp>
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_image.h>
 #include <xcb/randr.h>
@@ -55,6 +57,7 @@ namespace
 {
     sf::priv::WindowImplX11*              fullscreenWindow = NULL;
     std::vector<sf::priv::WindowImplX11*> allWindows;
+    sf::Mutex                             allWindowsMutex;
     unsigned long                         eventMask = XCB_EVENT_MASK_FOCUS_CHANGE | XCB_EVENT_MASK_BUTTON_PRESS |
                                                       XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_BUTTON_MOTION |
                                                       XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_KEY_PRESS |
@@ -424,6 +427,7 @@ WindowImplX11::~WindowImplX11()
     CloseDisplay(m_display);
 
     // Remove this window from the global list of windows (required for focus request)
+    Lock lock(allWindowsMutex);
     allWindows.erase(std::find(allWindows.begin(), allWindows.end(), this));
 }
 
@@ -448,7 +452,17 @@ void WindowImplX11::processEvents()
     xcb_key_release_event_t* lastKeyReleaseEvent = NULL;
     uint8_t eventType = 0;
 
-    while((event = xcb_poll_for_event(m_connection)))
+    if (!m_xcbEvents.empty())
+    {
+        event = m_xcbEvents.front();
+        m_xcbEvents.pop_front();
+    }
+    else
+    {
+        event = xcb_poll_for_event(m_connection);
+    }
+
+    while (event)
     {
         eventType = event->response_type & ~0x80;
 
@@ -469,29 +483,45 @@ void WindowImplX11::processEvents()
         // If there's still a key release event held back, process it now.
         if (lastKeyReleaseEvent)
         {
-            processEvent(reinterpret_cast<xcb_generic_event_t*>(lastKeyReleaseEvent));
-            free(lastKeyReleaseEvent);
+            if (processEvent(reinterpret_cast<xcb_generic_event_t*>(lastKeyReleaseEvent)))
+                free(lastKeyReleaseEvent);
+
             lastKeyReleaseEvent = NULL;
         }
 
         if (eventType == XCB_KEY_RELEASE)
         {
-            // Remember this key release event.
-            lastKeyReleaseEvent = reinterpret_cast<xcb_key_release_event_t*>(event);
-            event = NULL; // For safety reasons.
+            // Check if we're in charge of the key release
+            if (!passEvent(event, reinterpret_cast<xcb_key_release_event_t*>(event)->event))
+            {
+                // Remember this key release event.
+                lastKeyReleaseEvent = reinterpret_cast<xcb_key_release_event_t*>(event);
+                event = NULL; // For safety reasons.
+            }
         }
         else
         {
-            processEvent(event);
-            free(event);
+            if (processEvent(event))
+                free(event);
+        }
+
+        if (!m_xcbEvents.empty())
+        {
+            event = m_xcbEvents.front();
+            m_xcbEvents.pop_front();
+        }
+        else
+        {
+            event = xcb_poll_for_event(m_connection);
         }
     }
 
     // Process any held back release event.
     if (lastKeyReleaseEvent)
     {
-        processEvent(reinterpret_cast<xcb_generic_event_t*>(lastKeyReleaseEvent));
-        free(lastKeyReleaseEvent);
+        if (processEvent(reinterpret_cast<xcb_generic_event_t*>(lastKeyReleaseEvent)))
+            free(lastKeyReleaseEvent);
+
         lastKeyReleaseEvent = NULL;
     }
 }
@@ -912,12 +942,16 @@ void WindowImplX11::requestFocus()
     // Check the global list of windows to find out whether an SFML window has the focus
     // Note: can't handle console and other non-SFML windows belonging to the application.
     bool sfmlWindowFocused = false;
-    for (std::vector<WindowImplX11*>::iterator itr = allWindows.begin(); itr != allWindows.end(); ++itr)
+
     {
-        if ((*itr)->hasFocus())
+        Lock lock(allWindowsMutex);
+        for (std::vector<WindowImplX11*>::iterator itr = allWindows.begin(); itr != allWindows.end(); ++itr)
         {
-            sfmlWindowFocused = true;
-            break;
+            if ((*itr)->hasFocus())
+            {
+                sfmlWindowFocused = true;
+                break;
+            }
         }
     }
 
@@ -1489,6 +1523,7 @@ void WindowImplX11::initialize()
     xcb_flush(m_connection);
 
     // Add this window to the global list of windows (required for focus request)
+    Lock lock(allWindowsMutex);
     allWindows.push_back(this);
 }
 
@@ -1571,6 +1606,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Destroy event
         case XCB_DESTROY_NOTIFY:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_destroy_notify_event_t*>(windowEvent)->window))
+                return false;
+
             // The window is about to be destroyed: we must cleanup resources
             cleanup();
             break;
@@ -1579,6 +1617,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Gain focus event
         case XCB_FOCUS_IN:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_focus_in_event_t*>(windowEvent)->event))
+                return false;
+
             // Update the input context
             if (m_inputContext)
                 XSetICFocus(m_inputContext);
@@ -1629,6 +1670,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Lost focus event
         case XCB_FOCUS_OUT:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_focus_out_event_t*>(windowEvent)->event))
+                return false;
+
             // Update the input context
             if (m_inputContext)
                 XUnsetICFocus(m_inputContext);
@@ -1642,6 +1686,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Resize event
         case XCB_CONFIGURE_NOTIFY:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_configure_notify_event_t*>(windowEvent)->window))
+                return false;
+
             xcb_configure_notify_event_t* e = reinterpret_cast<xcb_configure_notify_event_t*>(windowEvent);
             Event event;
             event.type        = Event::Resized;
@@ -1654,6 +1701,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Close event
         case XCB_CLIENT_MESSAGE:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_client_message_event_t*>(windowEvent)->window))
+                return false;
+
             xcb_client_message_event_t* e = reinterpret_cast<xcb_client_message_event_t*>(windowEvent);
 
             // Handle window manager protocol messages we support
@@ -1692,6 +1742,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Key down event
         case XCB_KEY_PRESS:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_key_press_event_t*>(windowEvent)->event))
+                return false;
+
             xcb_key_press_event_t* e = reinterpret_cast<xcb_key_press_event_t*>(windowEvent);
 
             // Get the keysym of the key that has been pressed
@@ -1773,6 +1826,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Key up event
         case XCB_KEY_RELEASE:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_key_release_event_t*>(windowEvent)->event))
+                return false;
+
             xcb_key_release_event_t* e = reinterpret_cast<xcb_key_release_event_t*>(windowEvent);
 
             // Get the keysym of the key that has been pressed
@@ -1803,6 +1859,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Mouse button pressed
         case XCB_BUTTON_PRESS:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_button_press_event_t*>(windowEvent)->event))
+                return false;
+
             xcb_button_press_event_t* e = reinterpret_cast<xcb_button_press_event_t*>(windowEvent);
 
             // XXX: Why button 8 and 9?
@@ -1833,6 +1892,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Mouse button released
         case XCB_BUTTON_RELEASE:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_button_release_event_t*>(windowEvent)->event))
+                return false;
+
             xcb_button_release_event_t* e = reinterpret_cast<xcb_button_press_event_t*>(windowEvent);
 
             xcb_button_t button = e->detail;
@@ -1871,6 +1933,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Mouse moved
         case XCB_MOTION_NOTIFY:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_motion_notify_event_t*>(windowEvent)->event))
+                return false;
+
             xcb_motion_notify_event_t* e = reinterpret_cast<xcb_motion_notify_event_t*>(windowEvent);
             Event event;
             event.type        = Event::MouseMoved;
@@ -1883,6 +1948,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Mouse entered
         case XCB_ENTER_NOTIFY:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_enter_notify_event_t*>(windowEvent)->event))
+                return false;
+
             xcb_enter_notify_event_t* enterNotifyEvent = reinterpret_cast<xcb_enter_notify_event_t*>(windowEvent);
 
             if (enterNotifyEvent->mode == NotifyNormal)
@@ -1897,6 +1965,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Mouse left
         case XCB_LEAVE_NOTIFY:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_leave_notify_event_t*>(windowEvent)->event))
+                return false;
+
             xcb_leave_notify_event_t* leaveNotifyEvent = reinterpret_cast<xcb_leave_notify_event_t*>(windowEvent);
 
             if (leaveNotifyEvent->mode == NotifyNormal)
@@ -1911,6 +1982,9 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
         // Parent window changed
         case XCB_REPARENT_NOTIFY:
         {
+            if (passEvent(windowEvent, reinterpret_cast<xcb_reparent_notify_event_t*>(windowEvent)->window))
+                return false;
+
             // Catch reparent events to properly apply fullscreen on
             // some "strange" window managers (like Awesome) which
             // seem to make use of temporary parents during mapping
@@ -1923,6 +1997,33 @@ bool WindowImplX11::processEvent(xcb_generic_event_t* windowEvent)
     }
 
     return true;
+}
+
+
+////////////////////////////////////////////////////////////
+bool WindowImplX11::passEvent(xcb_generic_event_t* windowEvent, xcb_window_t window)
+{
+    // Check if this is our event
+    if (window == m_window)
+        return false;
+
+    Lock lock(allWindowsMutex);
+
+    // If we are the only window, there is nobody else to pass to
+    if (allWindows.size() == 1)
+        return false;
+
+    for (std::vector<sf::priv::WindowImplX11*>::iterator i = allWindows.begin(); i != allWindows.end(); ++i)
+    {
+        if ((*i)->m_window == window)
+        {
+            (*i)->m_xcbEvents.push_back(windowEvent);
+            return true;
+        }
+    }
+
+    // It seems nobody wants the event, we'll just handle it ourselves
+    return false;
 }
 
 
