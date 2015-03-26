@@ -63,8 +63,22 @@ else()
     set(SFML_BUILD_EXAMPLES FALSE)
 endif()
 
+# add options for installing the examples
+if(SFML_BUILD_EXAMPLES)
+    sfml_set_option(SFML_INSTALL_EXAMPLES FALSE BOOL "TRUE to install the SFML examples, FALSE to leave them in the build directory")
+    sfml_set_option(SFML_INSTALL_EXAMPLES_PREFIX ${INSTALL_MISC_DIR} PATH "Install path prefix, prepended onto example install directory")
+endif()
+
 # add an option for building the API documentation
 sfml_set_option(SFML_BUILD_DOC FALSE BOOL "TRUE to generate the API documentation, FALSE to ignore it")
+
+# add option for installing the API documentation
+if(SFML_BUILD_DOC)
+    sfml_set_option(SFML_INSTALL_DOC FALSE BOOL "TRUE to install the SFML API documentation, FALSE to leave them in the build directory")
+endif()
+
+# add option for specifying path to install documentation files
+sfml_set_option(SFML_INSTALL_DOC_PREFIX ${INSTALL_MISC_DIR} PATH "Install path prefix, prepended onto the documentation install directory")
 
 # add an option for choosing the OpenGL implementation
 sfml_set_option(SFML_OPENGL_ES ${OPENGL_ES} BOOL "TRUE to use an OpenGL ES implementation, FALSE to use a desktop OpenGL implementation")
@@ -275,10 +289,10 @@ else()
             COMPONENT devel)
 endif()
 
-install(FILES license.txt DESTINATION ${INSTALL_MISC_DIR})
-install(FILES readme.txt DESTINATION ${INSTALL_MISC_DIR})
+install(FILES license.txt DESTINATION ${SFML_INSTALL_DOC_PREFIX})
+install(FILES readme.txt DESTINATION ${SFML_INSTALL_DOC_PREFIX})
 if(NOT SFML_OS_ANDROID)
-    install(FILES cmake/Modules/FindSFML.cmake DESTINATION ${INSTALL_MISC_DIR}/cmake/Modules)
+    install(FILES cmake/Modules/FindSFML.cmake DESTINATION ${SFML_INSTALL_DOC_PREFIX}/cmake/Modules)
 endif()
 
 # install 3rd-party libraries and tools
